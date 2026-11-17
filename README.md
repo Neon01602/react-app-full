@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # React + Node.js + MySQL Login App
 
 A small full-stack login/register application:
@@ -137,3 +138,6 @@ The backend serves the compiled React app from `frontend/dist`. Open `http://loc
 ## Important production notes
 
 This is a learning starter, not a complete production identity platform. Before public production use, add rate limiting, CSRF protection appropriate to your deployment, email verification, password reset, stricter security headers, logging/monitoring, and HTTPS. Keep database credentials and JWT secrets out of source control. Use a least-privilege MySQL account and regular database backups.
+=======
+# react-app-full
+>>>>>>> 80934f1981f27a710bd0b92720bae6f8f0c180f6
