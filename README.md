@@ -1,143 +1,54 @@
-<<<<<<< HEAD
-# React + Node.js + MySQL Login App
+# React + Node.js + MySQL CRUD Account App
 
-A small full-stack login/register application:
-- **Frontend:** React + Vite
-- **Backend:** Node.js + Express
-- **Database:** MySQL
-- **Authentication:** bcrypt password hashing + JWT in an HTTP-only cookie
+Full-stack account application: React + Vite, Node.js + Express, MySQL, JWT cookie authentication, Amazon RDS, and private Amazon S3 profile-picture storage.
 
-## 1. Requirements
+## Features
+- Register, log in, and log out.
+- Read and update the currently authenticated user's own profile (name, email, phone, bio).
+- Delete the authenticated user's own account.
+- Upload JPG, PNG, or WEBP profile images (maximum 5 MB) to a private S3 bucket.
+- Profile image downloads use short-lived signed URLs.
+- Passwords use bcrypt hashes and authentication uses an HTTP-only cookie.
+- The API derives the user ID from the verified JWT, not a client-supplied ID.
 
-Install:
-- Node.js LTS (includes npm)
-- MySQL Server (or MySQL on your EC2 instance)
-- Git is optional
-
-Check Node/npm:
-```bash
-node -v
-npm -v
-```
-
-## 2. Create the MySQL database and user
-
-Open MySQL Workbench or the MySQL command line as an administrator, then run:
-
-```sql
-CREATE DATABASE login_app
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
-CREATE USER 'login_app'@'localhost' IDENTIFIED BY 'Choose_A_Strong_Password';
-GRANT SELECT, INSERT ON login_app.* TO 'login_app'@'localhost';
-FLUSH PRIVILEGES;
-```
-
-Then select the `login_app` database and run the contents of `backend/schema.sql` (or execute its `CREATE TABLE` statement). If you used the full schema file, it also creates/selects the database; create the MySQL user separately.
-
-If your Node backend runs on a different machine from MySQL, create a MySQL user restricted to that backend machine's IP instead of `localhost`, and configure MySQL networking/firewall securely. Do **not** expose port 3306 to the public internet.
-
-## 3. Configure the backend
-
-From the project root:
-
-```bash
-cp backend/.env.example backend/.env
-```
-
-On Windows PowerShell, use:
-```powershell
-Copy-Item backend/.env.example backend/.env
-```
-
-Edit `backend/.env`:
-```env
-PORT=3000
-NODE_ENV=development
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=login_app
-DB_PASSWORD=Choose_A_Strong_Password
-DB_NAME=login_app
-JWT_SECRET=paste_a_long_random_secret_here_at_least_32_characters
-COOKIE_SECURE=false
-```
-
-Generate a random secret if needed:
-```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-```
-Copy the output into `JWT_SECRET`. Never commit `.env` to Git.
-
-## 4. Install dependencies
-
-From the project root:
-```bash
-npm install
-npm run install:all
-```
-
-## 5. Run locally
-
-Open a terminal in the project root:
-```bash
-npm run dev
-```
-
-- React frontend: http://localhost:5173
-- Node API: http://localhost:3000
-- API/database health check: http://localhost:3000/api/health
-
-Open the frontend URL, choose **Create account**, register, then sign out and sign back in. Each account is inserted into MySQL. Passwords are stored as bcrypt hashes, not plain text.
-
-## 6. How the pieces connect
-
-```text
-Browser (React :5173)
-       |
-       | fetch /api/login or /api/register
-       v
-Vite development proxy
-       |
-       v
-Node + Express (:3000)
-       |
-       | mysql2 connection pool / SQL queries
-       v
-MySQL database (login_app -> users table)
-```
-
-The React app calls `/api/...`. During development Vite forwards those requests to Node on port 3000. Node verifies credentials against MySQL and sends a signed JWT in an HTTP-only cookie. The browser sends that cookie automatically on later requests.
-
-## 7. Build and run as one Node service
-
-```bash
-npm run build
-npm start
-```
-
-The backend serves the compiled React app from `frontend/dist`. Open `http://localhost:3000`.
-
-## 8. Deploying to your Ubuntu EC2 server
-
-1. Install Node.js LTS and MySQL Server (or use a separate managed MySQL host).
-2. Copy/clone this project onto EC2.
-3. Create the MySQL database, table, and restricted database user as above.
-4. Create `backend/.env` on EC2. Set `DB_HOST` to `localhost` if MySQL is on the same EC2 machine. Use `COOKIE_SECURE=true` once the site is served over HTTPS.
-5. In the project directory run:
+## Local development
+1. Install Node.js LTS and MySQL.
+2. Run backend/schema.sql in MySQL.
+3. Copy backend/.env.example to backend/.env and set local database credentials and a random JWT secret.
+4. From the project root run:
    ```bash
-   npm install
    npm run install:all
-   npm run build
-   npm start
+   npm run dev
    ```
-6. For a persistent deployment, run the backend with a process manager such as PM2 or configure a `systemd` service.
-7. Put Nginx in front of Node and proxy public HTTP/HTTPS traffic to `127.0.0.1:3000`. Keep Node's port 3000 and MySQL's port 3306 closed to the public; allow web traffic on ports 80/443.
-8. Configure HTTPS before setting `COOKIE_SECURE=true`.
+5. Open the Vite URL shown in the terminal (normally http://localhost:5173).
 
-## Important production notes
+S3 profile-image features require a configured bucket and AWS credentials. Locally, use an AWS CLI profile; on EC2, use an IAM instance role. Never commit .env or AWS access keys.
 
-This is a learning starter, not a complete production identity platform. Before public production use, add rate limiting, CSRF protection appropriate to your deployment, email verification, password reset, stricter security headers, logging/monitoring, and HTTPS. Keep database credentials and JWT secrets out of source control. Use a least-privilege MySQL account and regular database backups.
-=======
-# react-app-full
->>>>>>> 80934f1981f27a710bd0b92720bae6f8f0c180f6
+## Amazon RDS
+1. Create an RDS MySQL database in the same VPC as EC2.
+2. Set RDS to NOT publicly accessible.
+3. RDS security group inbound MySQL TCP 3306 source should be the EC2 instance security group (not 0.0.0.0/0).
+4. Set DB_HOST to the RDS endpoint and configure DB_USER, DB_PASSWORD, DB_NAME.
+5. Run backend/schema.sql for a new DB. For an existing users table, run backend/migrations/001_add_profile_fields.sql exactly once.
+6. Grant the application DB user SELECT, INSERT, UPDATE, DELETE on the application database.
+
+## Amazon S3
+1. Create a private S3 bucket in the selected AWS region. Keep Block Public Access enabled.
+2. Attach an IAM role to EC2 with s3:PutObject, s3:GetObject, and s3:DeleteObject on arn:aws:s3:::YOUR_BUCKET_NAME/profile-images/*.
+3. Set AWS_REGION and S3_BUCKET in backend/.env. Do not put AWS access keys in the app.
+4. The server uploads and deletes images using the EC2 role. It generates short-lived signed GET URLs to display images.
+
+## Deployment
+Run npm run install:all, npm run build, then npm start (or PM2 as configured). Keep Node port 3000 private behind Nginx. Open only SSH 22 from your IP and HTTP/HTTPS 80/443 as required. Use HTTPS and COOKIE_SECURE=true in production.
+
+## API
+- POST /api/register
+- POST /api/login
+- POST /api/logout
+- GET /api/me — read own profile
+- PUT /api/me — update own profile
+- POST /api/me/avatar — upload own image (multipart field: avatar)
+- DELETE /api/me — delete own account
+- GET /api/health
+
+Before public production use, add rate limiting, CSRF protection, email verification, password reset, security headers, structured logging, and monitoring.
