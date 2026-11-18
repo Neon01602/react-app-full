@@ -21,10 +21,15 @@ const pool = mysql.createPool({
 });
 const s3 = new S3Client({ region: process.env.AWS_REGION || "ap-south-1" });
 const bucket = process.env.S3_BUCKET;
+const imageTypes = {
+  "image/jpeg": { ext: "jpg", contentType: "image/jpeg" },
+  "image/png": { ext: "png", contentType: "image/png" },
+  "image/webp": { ext: "webp", contentType: "image/webp" }
+};
 const upload = multer({
   storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const ok = ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype);
+    const ok = Boolean(imageTypes[file.mimetype]);
     cb(ok ? null : new Error("Only JPG, PNG, and WEBP images are allowed."), ok);
   }
 });
@@ -37,8 +42,24 @@ function authRequired(req, res, next) {
   const token = req.cookies.session;
   if (!token) return res.status(401).json({ message: "Please log in." });
   try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.clearCookie("session", { ...cookieOptions, maxAge: undefined }); return res.status(401).json({ message: "Session expired. Please log in again." }); }
+  catch {
+    res.clearCookie("session", { ...cookieOptions, maxAge: undefined });
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
 }
+
+async function saveProfileImage(userId, file) {
+  if (!file) return null;
+  if (!bucket) throw new Error("S3 storage is not configured. Set S3_BUCKET before uploading a profile picture.");
+  const type = imageTypes[file.mimetype];
+  if (!type) throw new Error("Only JPG, PNG, and WEBP images are allowed.");
+  const key = "profile-images/" + userId + "/" + Date.now() + "-" + require("crypto").randomUUID() + "." + type.ext;
+  await s3.send(new PutObjectCommand({
+    Bucket: bucket, Key: key, Body: file.buffer, ContentType: type.contentType
+  }));
+  return key;
+}
+
 async function profileFor(userId) {
   const [rows] = await pool.execute("SELECT id, name, email, phone, bio, profile_image_key, created_at FROM users WHERE id = ?", [userId]);
   if (!rows.length) return null;
@@ -46,33 +67,62 @@ async function profileFor(userId) {
   const imageUrl = u.profile_image_key && bucket
     ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: u.profile_image_key }), { expiresIn: 900 })
     : null;
-  return { id: u.id, name: u.name, email: u.email, phone: u.phone, bio: u.bio, created_at: u.created_at, profile_image_url: imageUrl };
+  return {
+    id: u.id, name: u.name, email: u.email, phone: u.phone, bio: u.bio,
+    created_at: u.created_at, profile_image_url: imageUrl
+  };
 }
 
 app.get("/api/health", async (_req, res) => {
-  try { await pool.query("SELECT 1"); res.json({ status: "ok", database: "connected", storage: bucket ? "configured" : "not_configured" }); }
-  catch (e) { console.error("Database health check failed:", e.message); res.status(503).json({ status: "error", database: "disconnected" }); }
-});
-
-app.post("/api/register", async (req, res) => {
   try {
-    const name = String(req.body.name || "").trim(), email = String(req.body.email || "").trim().toLowerCase(), password = String(req.body.password || "");
-    if (name.length < 2 || name.length > 80) return res.status(400).json({ message: "Name must be between 2 and 80 characters." });
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ message: "Enter a valid email address." });
-    if (password.length < 8 || password.length > 72) return res.status(400).json({ message: "Password must be at least 8 characters." });
-    const [existing] = await pool.execute("SELECT id FROM users WHERE email = ?", [email]);
-    if (existing.length) return res.status(409).json({ message: "An account with this email already exists." });
-    const hash = await bcrypt.hash(password, 12);
-    const [result] = await pool.execute("INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)", [name, email, hash]);
-    const user = { id: result.insertId, name, email };
-    res.cookie("session", createToken(user), cookieOptions);
-    res.status(201).json({ message: "Account created successfully.", user: await profileFor(user.id) });
+    await pool.query("SELECT 1");
+    res.json({ status: "ok", database: "connected", storage: bucket ? "configured" : "not_configured" });
   } catch (e) {
-    if (e.code === "ER_DUP_ENTRY") return res.status(409).json({ message: "An account with this email already exists." });
-    console.error("Registration error:", e); res.status(500).json({ message: "Server error. Please try again." });
+    console.error("Database health check failed:", e.message);
+    res.status(503).json({ status: "error", database: "disconnected" });
   }
 });
 
+// CREATE: multipart registration optionally includes an "avatar" file.
+// The S3 object key is saved in RDS; the private bucket is never made public.
+app.post("/api/register", (req, res) => {
+  upload.single("avatar")(req, res, async (uploadError) => {
+    if (uploadError) return res.status(400).json({ message: uploadError.message || "Invalid image upload." });
+    let createdUserId = null;
+    let uploadedKey = null;
+    try {
+      const name = String(req.body.name || "").trim();
+      const email = String(req.body.email || "").trim().toLowerCase();
+      const password = String(req.body.password || "");
+      if (name.length < 2 || name.length > 80) return res.status(400).json({ message: "Name must be between 2 and 80 characters." });
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ message: "Enter a valid email address." });
+      if (password.length < 8 || password.length > 72) return res.status(400).json({ message: "Password must be at least 8 characters." });
+      if (req.file && !bucket) return res.status(503).json({ message: "Profile photo uploads require S3. Configure S3_BUCKET and the EC2 IAM role first." });
+      const [existing] = await pool.execute("SELECT id FROM users WHERE email = ?", [email]);
+      if (existing.length) return res.status(409).json({ message: "An account with this email already exists." });
+      const hash = await bcrypt.hash(password, 12);
+      const [result] = await pool.execute(
+        "INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)", [name, email, hash]
+      );
+      createdUserId = result.insertId;
+      if (req.file) {
+        uploadedKey = await saveProfileImage(createdUserId, req.file);
+        await pool.execute("UPDATE users SET profile_image_key = ? WHERE id = ?", [uploadedKey, createdUserId]);
+      }
+      const user = { id: createdUserId, name, email };
+      res.cookie("session", createToken(user), cookieOptions);
+      res.status(201).json({ message: "Account created successfully.", user: await profileFor(createdUserId) });
+    } catch (e) {
+      if (uploadedKey && bucket) await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: uploadedKey })).catch(() => {});
+      if (createdUserId) await pool.execute("DELETE FROM users WHERE id = ?", [createdUserId]).catch(() => {});
+      if (e.code === "ER_DUP_ENTRY") return res.status(409).json({ message: "An account with this email already exists." });
+      console.error("Registration error:", e);
+      res.status(500).json({ message: e.message && e.message.startsWith("S3 storage") ? e.message : "Could not create account. Please try again." });
+    }
+  });
+});
+
+// CREATE SESSION
 app.post("/api/login", async (req, res) => {
   try {
     const email = String(req.body.email || "").trim().toLowerCase(), password = String(req.body.password || "");
@@ -109,26 +159,32 @@ app.put("/api/me", authRequired, async (req, res) => {
     res.json({ message: "Profile updated successfully.", user });
   } catch (e) {
     if (e.code === "ER_DUP_ENTRY") return res.status(409).json({ message: "That email address is already in use." });
-    console.error("Profile update error:", e); res.status(500).json({ message: "Could not update profile." });
+    console.error("Profile update error:", e);
+    res.status(500).json({ message: "Could not update profile." });
   }
 });
 
-// Upload profile image to a private S3 bucket using the EC2 instance IAM role.
+// Upload/replace profile image in private S3; store only the stable object key in RDS.
 app.post("/api/me/avatar", authRequired, (req, res) => {
   if (!bucket) return res.status(503).json({ message: "S3 storage is not configured yet." });
   upload.single("avatar")(req, res, async (uploadError) => {
     if (uploadError) return res.status(400).json({ message: uploadError.message || "Invalid image upload." });
     if (!req.file) return res.status(400).json({ message: "Choose an image first." });
+    let newKey = null;
     try {
       const [rows] = await pool.execute("SELECT profile_image_key FROM users WHERE id = ?", [req.user.id]);
       if (!rows.length) return res.status(404).json({ message: "Account not found." });
-      const ext = ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" })[req.file.mimetype];
-      const key = "profile-images/" + req.user.id + "/" + Date.now() + "." + ext;
-      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: req.file.buffer, ContentType: req.file.mimetype }));
-      await pool.execute("UPDATE users SET profile_image_key = ? WHERE id = ?", [key, req.user.id]);
-      if (rows[0].profile_image_key) await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: rows[0].profile_image_key })).catch(console.error);
+      newKey = await saveProfileImage(req.user.id, req.file);
+      await pool.execute("UPDATE users SET profile_image_key = ? WHERE id = ?", [newKey, req.user.id]);
+      if (rows[0].profile_image_key) {
+        await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: rows[0].profile_image_key })).catch(e => console.error("Old avatar cleanup failed:", e.message));
+      }
       res.json({ message: "Profile picture uploaded.", user: await profileFor(req.user.id) });
-    } catch (e) { console.error("S3 upload error:", e); res.status(500).json({ message: "Could not upload profile picture." }); }
+    } catch (e) {
+      if (newKey) await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: newKey })).catch(() => {});
+      console.error("S3 upload error:", e);
+      res.status(500).json({ message: "Could not upload profile picture." });
+    }
   });
 });
 
@@ -138,18 +194,32 @@ app.delete("/api/me", authRequired, async (req, res) => {
     const [rows] = await pool.execute("SELECT profile_image_key FROM users WHERE id = ?", [req.user.id]);
     if (!rows.length) return res.status(404).json({ message: "Account not found." });
     await pool.execute("DELETE FROM users WHERE id = ?", [req.user.id]);
-    if (bucket && rows[0].profile_image_key) await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: rows[0].profile_image_key })).catch(e => console.error("S3 cleanup failed:", e.message));
+    if (bucket && rows[0].profile_image_key) {
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: rows[0].profile_image_key })).catch(e => console.error("S3 cleanup failed:", e.message));
+    }
     res.clearCookie("session", { ...cookieOptions, maxAge: undefined });
     res.json({ message: "Your account has been deleted." });
-  } catch (e) { console.error("Account deletion error:", e); res.status(500).json({ message: "Could not delete account." }); }
+  } catch (e) {
+    console.error("Account deletion error:", e);
+    res.status(500).json({ message: "Could not delete account." });
+  }
 });
 
-app.post("/api/logout", (_req, res) => { res.clearCookie("session", { ...cookieOptions, maxAge: undefined }); res.json({ message: "Logged out successfully." }); });
+app.post("/api/logout", (_req, res) => {
+  res.clearCookie("session", { ...cookieOptions, maxAge: undefined });
+  res.json({ message: "Logged out successfully." });
+});
+
 const frontendDist = path.join(__dirname, "../frontend/dist");
 app.use(express.static(frontendDist));
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api/")) return next();
-  res.sendFile(path.join(frontendDist, "index.html"), e => { if (e) res.status(404).send("Frontend build not found. Run npm run build from the project root."); });
+  res.sendFile(path.join(frontendDist, "index.html"), e => {
+    if (e) res.status(404).send("Frontend build not found. Run npm run build from the project root.");
+  });
 });
-app.use((e, _req, res, _next) => { console.error("Unhandled request error:", e); res.status(500).json({ message: "Unexpected server error." }); });
+app.use((e, _req, res, _next) => {
+  console.error("Unhandled request error:", e);
+  res.status(500).json({ message: "Unexpected server error." });
+});
 app.listen(PORT, () => console.log("Backend running on http://localhost:" + PORT));
