@@ -26,6 +26,16 @@ function publicMessage(row) {
 module.exports = function registerMailRoutes(app, { pool, authRequired }) {
   router.use(authRequired);
 
+  router.get("/account", async (req, res) => {
+    try {
+      if (!DOMAIN || !/^[a-z0-9.-]+$/.test(DOMAIN)) return res.status(503).json({ message: "Set LUMA_MAIL_DOMAIN to your verified email domain." });
+      const address = String(req.user.id) + "@" + DOMAIN;
+      await pool.execute("UPDATE users SET luma_email = COALESCE(luma_email, ?) WHERE id = ?", [address, req.user.id]);
+      const [rows] = await pool.execute("SELECT luma_email FROM users WHERE id = ?", [req.user.id]);
+      res.json({ email: rows[0].luma_email });
+    } catch (e) { console.error("Mailbox account:", e); res.status(500).json({ message: "Could not load Luma address." }); }
+  });
+
   router.get("/messages", async (req, res) => {
     try {
       const folder = ["inbox", "sent", "drafts"].includes(req.query.folder) ? req.query.folder : "inbox";
