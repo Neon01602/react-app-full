@@ -210,6 +210,9 @@ app.post("/api/logout", (_req, res) => {
   res.json({ message: "Logged out successfully." });
 });
 
+// Luma Mail API: authenticated mailbox and SES sending routes.
+require("./mail")(app, { pool, authRequired });
+
 const frontendDist = path.join(__dirname, "../frontend/dist");
 app.use(express.static(frontendDist));
 app.get("*", (req, res, next) => {

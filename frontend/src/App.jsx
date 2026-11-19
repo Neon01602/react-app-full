@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import MailWorkspace from "./MailWorkspace.jsx";
 
 const API = "/api";
 const blank = { name: "", email: "", phone: "", bio: "", password: "" };
 
 export default function App() {
   const [mode, setMode] = useState("login");
+  const [mailOpen, setMailOpen] = useState(false);
   const [form, setForm] = useState(blank);
   const [edit, setEdit] = useState({ name: "", email: "", phone: "", bio: "" });
   const [user, setUser] = useState(null);
@@ -150,8 +152,8 @@ export default function App() {
       <aside className="sidebar">
         <a className="brand" href="#"><span className="brand-mark">L</span><span>luma<span className="brand-dot">.</span></span></a>
         <p className="nav-caption">WORKSPACE</p>
-        <div className="nav-item active"><span className="nav-icon">⌂</span> Overview</div>
-        <div className="nav-item"><span className="nav-icon">◎</span> My profile</div>
+        <button className={"nav-item " + (!mailOpen ? "active" : "")} onClick={() => setMailOpen(false)}><span className="nav-icon">⌂</span> Overview</button>
+        <button className={"nav-item " + (mailOpen ? "active" : "")} onClick={() => setMailOpen(true)}><span className="nav-icon">✉</span> Luma Mail</button>
         <div className="sidebar-bottom">
           <div className="sidebar-help"><span className="help-icon">?</span><div><strong>Need a hand?</strong><small>Your account, your control.</small></div></div>
           <button className="sidebar-logout" onClick={logout}>↪ <span>Sign out</span></button>
@@ -167,7 +169,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="dashboard-content">
+        {mailOpen ? <MailWorkspace request={request} user={user} /> : <div className="dashboard-content">
           <div className="welcome-row">
             <div><p className="eyebrow">YOUR PERSONAL SPACE</p><h1>Good to see you, {user.name.split(" ")[0]}.</h1><p className="subtext">Your profile and account details, all in one place.</p></div>
             <span className="status-pill"><i /> Account active</span>
@@ -210,7 +212,7 @@ export default function App() {
             <button className="danger-button" onClick={removeAccount} disabled={loading}>Delete account</button>
           </section>
           <footer className="dashboard-footer"><span>© {new Date().getFullYear()} Luma Account</span><span>Built with care · Your data stays yours</span></footer>
-        </div>
+        </div>}
       </section>
     </main>
   );
